@@ -1,7 +1,7 @@
 # Workflow: Recreate PR under Token User
 
-📂 Branch: [`workflows/pr-reassigning`](../../tree/workflows/pr-reassigning)  
-📌 Related overview: see [Main README](../../blob/main/README.md)
+📂 Branch: [`workflows/pr-reassigning`](https://github.com/lywebdev/github-workflows/tree/workflows/pr-reassigning)  
+📌 Related overview: see [Main page](https://github.com/lywebdev/github-workflows)
 
 ---
 

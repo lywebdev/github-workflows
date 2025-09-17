@@ -1,6 +1,6 @@
 # 🚀 GitHub Workflows for Pull Request Automation
 
-This repository contains two GitHub Actions workflows designed to automate PR management and review processes. ✨
+This repository contains two GitHub Actions workflows designed to automate PR management and review processes ✨
 
 ---
 

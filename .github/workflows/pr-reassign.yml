@@ -1,0 +1,159 @@
+name: Recreate PR under Token User
+
+on:
+  pull_request:
+    types: [opened, review_requested]
+
+concurrency:
+  group: "recreate-pr-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  recreate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Check if REVIEWER_TOKEN exists
+      - name: Check if REVIEWER_TOKEN exists
+        id: check-token
+        run: |
+          if [ -z "${{ secrets.REVIEWER_TOKEN }}" ]; then
+            echo "no-token=true" >> $GITHUB_OUTPUT
+          else
+            echo "no-token=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 2. Main step
+      - name: Recreate PR under token user
+        if: steps.check-token.outputs.no-token == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            if (!pr) {
+              console.log("No pull_request object in payload, exiting.");
+              return;
+            }
+
+            if (pr.state !== "open") {
+              console.log(`PR #${pr.number} is not open (state=${pr.state}), exiting.`);
+              return;
+            }
+
+            const reviewers = pr.requested_reviewers.map(u => u.login);
+
+            if (reviewers.length === 0) {
+              console.log(`PR #${pr.number} has no reviewers, skipping.`);
+              return;
+            }
+
+            const { data: tokenUser } = await github.rest.users.getAuthenticated();
+
+            if (pr.user.login === tokenUser.login) {
+              console.log(`PR #${pr.number} is already created by the token user (${tokenUser.login}), skipping.`);
+              return;
+            }
+
+            console.log(`PR #${pr.number} was created by ${pr.user.login}, different from token user (${tokenUser.login}), continuing.`);
+
+            const { data: existingPRs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${pr.head.ref}`,
+              base: pr.base.ref,
+              state: "open"
+            });
+
+            const duplicatePR = existingPRs.find(p => p.user.login === tokenUser.login);
+            if (duplicatePR) {
+              console.log(`An open PR (#${duplicatePR.number}) with branch ${pr.head.ref} from the token user already exists, skipping creation.`);
+              return;
+            }
+
+            try {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                state: "closed"
+              });
+              console.log(`Old PR #${pr.number} closed.`);
+            } catch (error) {
+              console.error(`Failed to close PR #${pr.number}:`, error);
+              return;
+            }
+
+            let newPr;
+            try {
+              let newBody = `${pr.body || ''}\n\n_Recreated from #${pr.number}_`;
+
+              const { data } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: pr.head.ref,
+                base: pr.base.ref,
+                title: pr.title,
+                body: newBody
+              });
+              newPr = data;
+              console.log(`New PR #${newPr.number} created under the token user`);
+            } catch (error) {
+              console.error("❌ Failed to create a new PR:", error);
+
+              try {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  state: "open"
+                });
+                console.log(`Old PR #${pr.number} was reopened.`);
+              } catch (reopenErr) {
+                console.error("‼️ Failed to reopen old PR:", reopenErr);
+              }
+
+              return;
+            }
+
+            if (pr.assignees.length > 0) {
+              const assignees = pr.assignees.map(u => u.login);
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: newPr.number,
+                assignees
+              });
+              console.log(`Assignees copied: ${assignees.join(', ')}`);
+            }
+
+            // 🔥 Filter reviewers – exclude the new PR author
+            const filteredReviewers = reviewers.filter(r => r !== tokenUser.login);
+
+            if (filteredReviewers.length > 0) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: newPr.number,
+                  reviewers: filteredReviewers
+                });
+                console.log(`Reviewers copied: ${filteredReviewers.join(', ')}`);
+              } catch (error) {
+                console.error("⚠️ Error while assigning reviewers:", error);
+              }
+            } else {
+              console.log("No valid reviewers to assign (author excluded).");
+            }
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `This PR was closed and reopened as #${newPr.number}`
+              });
+              console.log("Comments added to old and new PRs.");
+            } catch (error) {
+              console.error("Failed to add comments:", error);
+            }
